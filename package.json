@@ -1,0 +1,17 @@
+{
+  "name": "tumo-full-agent",
+  "version": "1.0.0",
+  "description": "The full agent project",
+  "scripts": {
+    "start": "tsx src/agent.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "dotenv": "^16.4.7",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.1"
+  }
+}
