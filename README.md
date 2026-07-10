@@ -4,8 +4,7 @@ A small, hackable AI agent in about 250 lines of TypeScript. It runs a chat loop
 in your terminal, calls tools, and remembers things between runs. Think of it as
 your own tiny Claude Code.
 
-Built from the Day 5 template as the Week 2 starting point. See [`PLAN.md`](./PLAN.md)
-for what to build next.
+Built from the Day 5 template as the Week 2 starting point.
 
 ## Setup
 ```bash
@@ -91,5 +90,6 @@ safety limit.
 3. Add a slash command in `src/commands.ts`.
 4. Run `npm start` and chat with it.
 
-Then work through [`PLAN.md`](./PLAN.md): real tools, safer tool permissions, and
-smarter memory. (Streaming is already wired up.)
+From here you can add real tools (file access, a web fetch), ask the user to
+confirm anything that changes files, and give the agent smarter long-term
+memory. Streaming is already wired up.
