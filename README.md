@@ -4,7 +4,7 @@ A small, hackable AI agent written in TypeScript. It runs a chat loop in your
 terminal, calls tools, and remembers things between runs. Think of it as your
 own tiny Claude Code.
 
-Built from the Day 5 template as the Week 2 starting point.
+Built from the Day 5 template as the Week 2 starting point. [tumo-ai-agents](https://github.com/rhovagimian/tumo-ai-agents)
 
 ## Setup
 ```bash
