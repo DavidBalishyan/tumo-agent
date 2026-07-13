@@ -3,7 +3,8 @@
   "version": "1.0.0",
   "description": "The full agent project",
   "scripts": {
-    "start": "tsx src/agent.ts"
+    "start": "tsx src/agent.ts",
+    "serve": "tsx src/serve.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",

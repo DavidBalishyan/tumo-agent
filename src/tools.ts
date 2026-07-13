@@ -1,5 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import * as fs from "fs";
+import * as path from "path";
+import { spawnSync } from "child_process";
 
 export const calculatorTool: Anthropic.Tool = {
     name: "calculator",
@@ -99,12 +101,129 @@ function remember(input: any): string {
     return "Saved to memory: " + input.fact;
 }
 
+// ---- File tools: read/write/list within the project directory ----
+// The agent runs from the project root. We resolve every path against it and
+// refuse anything that escapes it, so the agent can't wander the whole disk.
+function safePath(p: string): string | null {
+    const root = process.cwd();
+    const resolved = path.resolve(root, p);
+    if (resolved !== root && !resolved.startsWith(root + path.sep)) return null;
+    return resolved;
+}
+
+export const readFileTool: Anthropic.Tool = {
+    name: "read_file",
+    description: "Read a UTF-8 text file, given a path relative to the project directory.",
+    input_schema: {
+        type: "object",
+        properties: { path: { type: "string" } },
+        required: ["path"],
+    },
+};
+
+function readFile(input: any): string {
+    const p = safePath(String(input.path ?? ""));
+    if (!p) return "Error: path is outside the project directory.";
+    try {
+        const data = fs.readFileSync(p, "utf-8");
+        return data.length > 64_000 ? data.slice(0, 64_000) + "\n... (truncated)" : data;
+    } catch (e: any) {
+        return "Error: " + e.message;
+    }
+}
+
+export const listDirTool: Anthropic.Tool = {
+    name: "list_dir",
+    description: "List the entries of a directory relative to the project directory (defaults to the root).",
+    input_schema: {
+        type: "object",
+        properties: { path: { type: "string" } },
+    },
+};
+
+function listDir(input: any): string {
+    const p = safePath(input.path ? String(input.path) : ".");
+    if (!p) return "Error: path is outside the project directory.";
+    try {
+        const entries = fs.readdirSync(p, { withFileTypes: true });
+        const names = entries.map((e) => (e.isDirectory() ? e.name + "/" : e.name));
+        return names.length ? names.sort().join("\n") : "(empty)";
+    } catch (e: any) {
+        return "Error: " + e.message;
+    }
+}
+
+export const writeFileTool: Anthropic.Tool = {
+    name: "write_file",
+    description: "Write (overwrite) a UTF-8 text file, given a path relative to the project directory.",
+    input_schema: {
+        type: "object",
+        properties: { path: { type: "string" }, content: { type: "string" } },
+        required: ["path", "content"],
+    },
+};
+
+function writeFile(input: any): string {
+    const p = safePath(String(input.path ?? ""));
+    if (!p) return "Error: path is outside the project directory.";
+    try {
+        // Create any missing parent directories so writing to a new nested
+        // path (e.g. notes/todo.md) just works instead of failing with ENOENT.
+        fs.mkdirSync(path.dirname(p), { recursive: true });
+        fs.writeFileSync(p, String(input.content ?? ""));
+        return "Wrote " + input.path;
+    } catch (e: any) {
+        return "Error: " + e.message;
+    }
+}
+
+export const runCommandTool: Anthropic.Tool = {
+    name: "run_command",
+    description:
+        "Run a shell command in the project directory and return its output. Good for listing files, running scripts, git, and similar tasks.",
+    input_schema: {
+        type: "object",
+        properties: { command: { type: "string" } },
+        required: ["command"],
+    },
+};
+
+function runShellCommand(input: any): string {
+    const command = String(input.command ?? "").trim();
+    if (!command) return "Error: no command given.";
+    const res = spawnSync(command, {
+        shell: true,
+        encoding: "utf-8",
+        cwd: process.cwd(),
+        timeout: 15_000, // don't let a hung command wedge the agent
+        maxBuffer: 1024 * 1024,
+    });
+    if (res.error) return "Error: " + res.error.message;
+
+    let out = ((res.stdout || "") + (res.stderr || "")).trim();
+    if (res.status !== 0) out = `(exit code ${res.status})\n` + out;
+    if (!out) out = "(no output)";
+    return out.length > 16_000 ? out.slice(0, 16_000) + "\n... (truncated)" : out;
+}
+
+// Tools that change something (write a file, run a command). The agent core
+// asks the front-end to confirm these before running them.
+export const DANGEROUS_TOOLS = new Set<string>(["write_file", "run_command"]);
+
+export function isDangerous(name: string): boolean {
+    return DANGEROUS_TOOLS.has(name);
+}
+
 // All tool definitions Claude can see
 export const allTools: Anthropic.Tool[] = [
     calculatorTool,
     weatherTool,
     dictionaryTool,
     rememberTool,
+    readFileTool,
+    listDirTool,
+    writeFileTool,
+    runCommandTool,
 ];
 
 // The dispatcher: maps a tool name to the real function that runs it.
@@ -119,6 +238,14 @@ export function runTool(name: string, input: any): string {
             return lookupWord(input);
         case "remember":
             return remember(input);
+        case "read_file":
+            return readFile(input);
+        case "list_dir":
+            return listDir(input);
+        case "write_file":
+            return writeFile(input);
+        case "run_command":
+            return runShellCommand(input);
         default:
             return "Error: unknown tool " + name;
     }

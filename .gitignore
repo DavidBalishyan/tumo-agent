@@ -2,3 +2,9 @@ node_modules/
 dist/
 .env
 memory.json
+sessions/
+
+# C GUI build artifacts and downloaded deps (run gui/fetch-deps.sh to restore)
+gui/tumo-gui
+gui/build/
+gui/vendor/
