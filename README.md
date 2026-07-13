@@ -1,4 +1,4 @@
-# Full Agent
+# TUMO agent
 
 A small, hackable AI agent written in TypeScript. It runs a chat loop in your
 terminal, calls tools, and remembers things between runs. Think of it as your
