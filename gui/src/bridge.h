@@ -1,6 +1,8 @@
 #ifndef BRIDGE_H
 #define BRIDGE_H
 
+#include "raylib.h"
+
 // The link to the Node agent (src/serve.ts). This module owns the child
 // process and the stdio pipes, and translates the JSON event stream into
 // chat-model changes.
@@ -23,6 +25,30 @@ int bridge_connected(void);
 int bridge_confirm_pending(void);      // 1 while a tool awaits yes/no
 const char *bridge_confirm_name(void); // the tool's name, for the prompt
 void bridge_answer_confirm(int approved); // send the decision, clear the wait
+
+// ---- LaTeX math rendering (request / response via the Node child) ----
+
+// Result of a rendered math expression.
+typedef struct {
+    int id;                    // matches the request ID
+    int loaded;                // 1 once the PNG data has arrived
+    int w, h;                  // width and height in pixels
+    int data_size;             // size of pixels buffer in bytes
+    unsigned char *pixels;     // raw PNG file data (needs decoding by raylib)
+} MathRenderResult;
+
+// Request the Node process to render a LaTeX expression with a given text
+// color (hex e.g. "#ffffff"). Returns an ID that can be used to poll for the
+// result later.
+int bridge_render_math(const char *latex, int display, Color text_color);
+
+// Poll for a completed render result. Returns NULL if not yet available,
+// or a pointer (valid until the next bridge_poll call) if the result is ready.
+// The result is removed from the pending queue after one retrieval.
+const MathRenderResult *bridge_math_result(int id);
+
+// Free all pending/completed math render data.
+void bridge_clear_math(void);
 
 // Ask the agent to exit, then terminate and reap the child.
 void bridge_shutdown(void);

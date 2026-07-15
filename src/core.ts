@@ -36,7 +36,8 @@ How to work:
 2. Use tools one step at a time when they help.
 3. When the user shares something worth keeping (their name, preferences,
    goals), call the remember tool.
-4. When the task is done, give a clear, friendly answer.`;
+4. When the task is done, give a clear, friendly answer.
+5. For mathematical expressions, use $...$ for inline math and $$...$$ for display math. For example: $E = mc^2$ or $$\sum_{i=1}^n i = \frac{n(n+1)}{2}$$.`;
 
 // Long-term memory is folded into the prompt on every call.
 function buildSystemPrompt(): string {

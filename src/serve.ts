@@ -1,8 +1,56 @@
 import "dotenv/config";
 import Anthropic from "@anthropic-ai/sdk";
 import * as readline from "readline";
+import * as fs from "fs";
+import { Resvg } from "@resvg/resvg-js";
 import { runAgent, AgentHandlers } from "./core";
 import { runCommand } from "./commands";
+
+// ============================================================
+// LaTeX math rendering via MathJax + resvg.
+// MathJax converts LaTeX to SVG, resvg rasterizes SVG to PNG.
+// ============================================================
+
+let mjReady: Promise<any> | null = null;
+
+async function getMathJax(): Promise<any> {
+  if (!mjReady) {
+    mjReady = (async () => {
+      const { init } = await import("mathjax-full/es5/node-main.js");
+      const MathJax = await init({
+        loader: { load: ["input/tex", "output/svg"] },
+        tex: { packages: { "[+]": ["ams", "noerrors", "noundefined"] } },
+        svg: { fontCache: "none" },
+      });
+      return MathJax;
+    })();
+  }
+  return mjReady;
+}
+
+async function renderMath(latex: string, display: boolean, color?: string): Promise<{ width: number; height: number; data: string }> {
+  const MathJax = await getMathJax();
+  const svg = MathJax.tex2svg(latex, { display });
+  const svgHtml = MathJax.startup.adaptor.innerHTML(svg);
+
+  // Inject text color into the SVG so glyphs aren't always black.
+  // MathJax output uses "currentColor" and already has a style attribute.
+  // Append our color into the existing style.
+  const colored = color
+    ? svgHtml.replace('style="', `style="color:${color};`)
+    : svgHtml;
+
+  // SVG natural width (in ex units) tells us the pixel width at 1ex=~font size.
+  // Render at a high DPI so long equations stay crisp; the C side scales down.
+  const resvg = new Resvg(colored, {
+    fitTo: { mode: "width", value: 1200 },
+    background: "rgba(0,0,0,0)",
+  });
+  const rendered = resvg.render();
+  const png = rendered.asPng();
+  const b64 = png.toString("base64");
+  return { width: rendered.width, height: rendered.height, data: b64 };
+}
 
 // ============================================================
 // The stdio protocol adapter. Same idea as the CLI adapter in
@@ -32,11 +80,13 @@ import { runCommand } from "./commands";
 //   {"type":"turn_end"}          // safe to send the next message
 //   {"type":"command_result","lines":[...],"cleared":bool}
 //   {"type":"confirm","name":"...","input":{...}}  // asking to run a tool
+//   {"type":"math_rendered","id":...,"width":...,"height":...,"data":"<base64>"}
 //
 // Commands in (GUI -> node):
 //   {"type":"user","text":"..."}
 //   {"type":"command","text":"/model opus"}
 //   {"type":"confirm_response","approved":bool}
+//   {"type":"render_math","id":...,"latex":"...","display":bool}
 //   {"type":"exit"}
 // ============================================================
 
@@ -121,6 +171,14 @@ rl.on("line", (line) => {
             pendingConfirm = null;
             resolve(!!msg.approved);
         }
+    } else if (msg.type === "render_math" && typeof msg.latex === "string") {
+        // Render LaTeX to PNG in the background; the result arrives whenever it's ready.
+        const color = typeof msg.color === "string" ? msg.color : undefined;
+        renderMath(msg.latex, !!msg.display, color)
+            .then((result) => emit({ type: "math_rendered", id: msg.id, ...result }))
+            .catch((e: any) =>
+                emit({ type: "error", message: `math render failed: ${e?.message ?? e}` })
+            );
     } else if (msg.type === "exit") {
         process.exit(0);
     } else {

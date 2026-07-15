@@ -8,7 +8,9 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
+    "@resvg/resvg-js": "^2.6.2",
     "dotenv": "^16.4.7",
+    "mathjax-full": "3.2.2",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0"
   },

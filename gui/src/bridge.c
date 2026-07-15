@@ -9,6 +9,7 @@
 #include <errno.h>
 #include <signal.h>
 #include <sys/wait.h>
+#include <math.h>
 
 #include "cJSON.h"
 #include "chat.h"
@@ -21,6 +22,106 @@ static int connected = 0;
 
 static int confirm_pending = 0;      // a dangerous tool awaits approval
 static char confirm_name[128] = {0}; // its name, for the prompt
+
+// ---- LaTeX math rendering ----
+#define MAX_MATH_RESULTS 256
+static MathRenderResult math_results[MAX_MATH_RESULTS];
+static int math_result_count = 0;
+static int math_next_id = 1;
+
+int bridge_render_math(const char *latex, int display, Color text_color) {
+    if (child_in < 0) return 0;
+    int id = math_next_id++;
+
+    // Store a pending entry
+    if (math_result_count < MAX_MATH_RESULTS) {
+        MathRenderResult *r = &math_results[math_result_count++];
+        r->id = id;
+        r->loaded = 0;
+        r->w = r->h = 0;
+        r->pixels = NULL;
+    }
+
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddStringToObject(o, "type", "render_math");
+    cJSON_AddNumberToObject(o, "id", id);
+    cJSON_AddStringToObject(o, "latex", latex);
+    cJSON_AddBoolToObject(o, "display", display ? 1 : 0);
+    char hex[8];
+    snprintf(hex, sizeof(hex), "#%02x%02x%02x", text_color.r, text_color.g, text_color.b);
+    cJSON_AddStringToObject(o, "color", hex);
+    char *s = cJSON_PrintUnformatted(o);
+    if (s) {
+        (void)!write(child_in, s, strlen(s));
+        (void)!write(child_in, "\n", 1);
+        free(s);
+    }
+    cJSON_Delete(o);
+    return id;
+}
+
+const MathRenderResult *bridge_math_result(int id) {
+    for (int i = 0; i < math_result_count; i++) {
+        if (math_results[i].id == id && math_results[i].loaded) {
+            return &math_results[i];
+        }
+    }
+    return NULL;
+}
+
+void bridge_clear_math(void) {
+    for (int i = 0; i < math_result_count; i++) {
+        free(math_results[i].pixels);
+        math_results[i].pixels = NULL;
+    }
+    math_result_count = 0;
+}
+
+// Decode a base64 string into a byte buffer. Returns malloc'd data or NULL.
+// Handles standard base64 with optional padding.
+static unsigned char *base64_decode(const char *s, int *out_len) {
+    if (!s || !*s) { *out_len = 0; return NULL; }
+    int len = (int)strlen(s);
+    // Each 4 base64 chars -> 3 bytes.
+    int est = len / 4 * 3;
+    // Adjust for padding
+    if (len >= 2 && s[len - 2] == '=') est -= 2;
+    else if (len >= 1 && s[len - 1] == '=') est -= 1;
+
+    // Initialize the base64 decode table once:
+    static int tbl_ok = 0;
+    static unsigned char tbl[256];
+    if (!tbl_ok) {
+        for (int i = 0; i < 256; i++) tbl[i] = 0;
+        for (int c = 'A'; c <= 'Z'; c++) tbl[c] = (unsigned char)(c - 'A');
+        for (int c = 'a'; c <= 'z'; c++) tbl[c] = (unsigned char)(c - 'a' + 26);
+        for (int c = '0'; c <= '9'; c++) tbl[c] = (unsigned char)(c - '0' + 52);
+        tbl['+'] = 62; tbl['/'] = 63;
+        tbl_ok = 1;
+    }
+
+    unsigned char *out = malloc((size_t)est + 4);
+    if (!out) { *out_len = 0; return NULL; }
+    int o = 0;
+    unsigned char buf[4];
+    int bi = 0;
+    for (int i = 0; i < len; i++) {
+        unsigned char c = (unsigned char)s[i];
+        if (c == '=') break;
+        if (c > 127 || (tbl[c] == 0 && c != 'A')) continue; // skip whitespace etc.
+        buf[bi++] = tbl[c];
+        if (bi == 4) {
+            out[o++] = (unsigned char)((buf[0] << 2) | (buf[1] >> 4));
+            out[o++] = (unsigned char)((buf[1] << 4) | (buf[2] >> 2));
+            out[o++] = (unsigned char)((buf[2] << 6) | buf[3]);
+            bi = 0;
+        }
+    }
+    if (bi >= 2) out[o++] = (unsigned char)((buf[0] << 2) | (buf[1] >> 4));
+    if (bi >= 3) out[o++] = (unsigned char)((buf[1] << 4) | (buf[2] >> 2));
+    *out_len = o;
+    return out;
+}
 
 void bridge_start(void) {
     // Run from the project root so .env, memory.json, and src/serve.ts resolve.
@@ -131,7 +232,7 @@ static void handle_event(const char *type, cJSON *o) {
         chat_push(ROLE_SYSTEM, buf);
     } else if (strcmp(type, "command_result") == 0) {
         cJSON *cleared = cJSON_GetObjectItem(o, "cleared");
-        if (cJSON_IsTrue(cleared)) chat_clear();
+        if (cJSON_IsTrue(cleared)) { chat_clear(); bridge_clear_math(); }
         cJSON *lines = cJSON_GetObjectItem(o, "lines");
         if (cJSON_IsArray(lines)) {
             int n = cJSON_GetArraySize(lines);
@@ -147,6 +248,38 @@ static void handle_event(const char *type, cJSON *o) {
         snprintf(confirm_name, sizeof(confirm_name), "%s",
                  cJSON_IsString(name) ? name->valuestring : "this tool");
         confirm_pending = 1;
+    } else if (strcmp(type, "math_rendered") == 0) {
+        cJSON *id = cJSON_GetObjectItem(o, "id");
+        cJSON *w = cJSON_GetObjectItem(o, "width");
+        cJSON *h = cJSON_GetObjectItem(o, "height");
+        cJSON *data = cJSON_GetObjectItem(o, "data");
+        if (cJSON_IsNumber(id) && cJSON_IsNumber(w) && cJSON_IsNumber(h) && cJSON_IsString(data)) {
+            int rid = id->valueint;
+            int rw = w->valueint, rh = h->valueint;
+            int png_len;
+            unsigned char *png_data = base64_decode(data->valuestring, &png_len);
+            if (png_data) {
+                // Find or create a result slot
+                MathRenderResult *rr = NULL;
+                for (int i = 0; i < math_result_count; i++) {
+                    if (math_results[i].id == rid) { rr = &math_results[i]; break; }
+                }
+                if (!rr && math_result_count < MAX_MATH_RESULTS) {
+                    rr = &math_results[math_result_count++];
+                    rr->id = rid;
+                }
+                if (rr) {
+                    free(rr->pixels);
+                    rr->w = rw;
+                    rr->h = rh;
+                    rr->data_size = png_len;
+                    rr->pixels = png_data;
+                    rr->loaded = 1;
+                } else {
+                    free(png_data);
+                }
+            }
+        }
     }
     // "turn_end" is handled in bridge_poll so it can clear the busy flag.
 }

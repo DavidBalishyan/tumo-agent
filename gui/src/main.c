@@ -29,6 +29,7 @@ int main(void) {
     InitWindow(900, 640, "TUMO agent");
     SetTargetFPS(60);
     ui_load_font();
+    ui_load_settings();
 
     char input[4096] = {0};
     int input_len = 0;
@@ -44,16 +45,65 @@ int main(void) {
         bridge_poll(&busy);
 
         int ctrl = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
+        int shift = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
+
+        // theme toggle: ctrl+t
+        if (ctrl && !shift && IsKeyPressed(KEY_T)) {
+            ui_toggle_theme();
+            ui_save_settings();
+        }
+
+        // copy: ctrl+shift+C  (copy selected or newest non-system message)
+        if (ctrl && shift && IsKeyPressed(KEY_C)) {
+            const Msg *m = NULL;
+            if (ui_selected_msg >= 0 && ui_selected_msg < chat_count())
+                m = chat_get(ui_selected_msg);
+            if (!m || m->role == ROLE_SYSTEM || !m->text || !m->text[0]) {
+                // fallback: newest non-system message
+                for (int i = chat_count() - 1; i >= 0; i--) {
+                    m = chat_get(i);
+                    if (m->role != ROLE_SYSTEM && m->text && m->text[0]) break;
+                }
+            }
+            if (m && m->text && m->text[0])
+                SetClipboardText(m->text);
+        }
+
+        // paste: ctrl+V
+        if (ctrl && !shift && IsKeyPressed(KEY_V)) {
+            const char *clip = GetClipboardText();
+            if (clip) {
+                size_t clen = strlen(clip);
+                size_t room = sizeof(input) - (size_t)input_len - 1;
+                if (clen > room) clen = room;
+                memcpy(input + input_len, clip, clen);
+                input_len += (int)clen;
+                input[input_len] = 0;
+            }
+        }
 
         // zoom: ctrl + plus / minus (main row or keypad), held-to-repeat
-        if (ctrl) {
+        if (ctrl && !shift) {
             if (IsKeyPressed(KEY_EQUAL) || IsKeyPressedRepeat(KEY_EQUAL) ||
-                IsKeyPressed(KEY_KP_ADD) || IsKeyPressedRepeat(KEY_KP_ADD))
+                IsKeyPressed(KEY_KP_ADD) || IsKeyPressedRepeat(KEY_KP_ADD)) {
+                int old = ui_font_size();
                 ui_zoom(+1);
+                if (ui_font_size() != old) ui_save_settings();
+            }
             if (IsKeyPressed(KEY_MINUS) || IsKeyPressedRepeat(KEY_MINUS) ||
-                IsKeyPressed(KEY_KP_SUBTRACT) || IsKeyPressedRepeat(KEY_KP_SUBTRACT))
+                IsKeyPressed(KEY_KP_SUBTRACT) || IsKeyPressedRepeat(KEY_KP_SUBTRACT)) {
+                int old = ui_font_size();
                 ui_zoom(-1);
+                if (ui_font_size() != old) ui_save_settings();
+            }
         }
+
+        // ctrl+wheel zoom also saves
+        if (GetMouseWheelMove() != 0 && ctrl) {
+            // will be handled below, but save happens there
+        }
+
+        // 2. input
 
         // 2. input
         if (bridge_confirm_pending()) {
@@ -110,10 +160,40 @@ int main(void) {
         float max_scroll = content_h - view_h;
         if (max_scroll < 0) max_scroll = 0;
 
+        // click to select a message
+        if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+            Vector2 mp = GetMousePosition();
+            if (mp.y >= view_top && mp.y < view_top + view_h) {
+                // screen_y is in the chat content area
+                float screen_y = mp.y;
+                int idx = ui_msg_at_y(screen_y);
+                if (idx >= 0) {
+                    ui_selected_msg = (ui_selected_msg == idx) ? -1 : idx;
+                } else {
+                    ui_selected_msg = -1;
+                }
+            }
+        }
+
+        // right-click to copy the selected (or clicked) message
+        if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) {
+            Vector2 mp = GetMousePosition();
+            int idx = ui_msg_at_y(mp.y);
+            if (idx >= 0) {
+                const Msg *m = chat_get(idx);
+                if (m->text && m->text[0]) SetClipboardText(m->text);
+            } else if (ui_selected_msg >= 0 && ui_selected_msg < chat_count()) {
+                const Msg *m = chat_get(ui_selected_msg);
+                if (m->text && m->text[0]) SetClipboardText(m->text);
+            }
+        }
+
         float wheel = GetMouseWheelMove();
         if (wheel != 0) {
             if (ctrl) {
+                int old = ui_font_size();
                 ui_zoom(wheel > 0 ? +1 : -1); // ctrl + wheel = zoom
+                if (ui_font_size() != old) ui_save_settings();
             } else {
                 scroll -= wheel * 40;
                 stick = 0;
@@ -125,16 +205,41 @@ int main(void) {
         if (scroll >= max_scroll - 1.0f) stick = 1;
 
         // 4. draw
+        Palette pal = ui_palette();
         BeginDrawing();
-        ClearBackground((Color){24, 24, 27, 255});
+        ClearBackground(pal.bg);
 
         BeginScissorMode(0, (int)view_top, sw, (int)view_h);
         ui_layout(view_top - scroll, sw, 1);
         EndScissorMode();
 
+        // scrollbar
+        if (max_scroll > 0) {
+            float bar_h = view_h * (view_h / content_h);
+            float bar_y = view_top + (scroll / max_scroll) * (view_h - bar_h);
+            DrawRectangle(sw - 8, (int)bar_y, 6, (int)bar_h, pal.scrollbar);
+        }
+
+        // gear / settings button (top-right corner)
+        {
+            int btn_size = 28;
+            int bx = sw - btn_size - PAD;
+            int by = PAD;
+            Color btn_col = pal.input_bg;
+            Vector2 mp = GetMousePosition();
+            Rectangle btn_rect = {(float)bx, (float)by, (float)btn_size, (float)btn_size};
+            int hover = CheckCollisionPointRec(mp, btn_rect);
+            if (hover) btn_col = ui_shade(btn_col, 20);
+            DrawRectangleRounded(btn_rect, 0.3f, 6, btn_col);
+            // gear symbol
+            ui_draw_text("\xE2\x9A\x99", (float)bx + 5, (float)by + 3, pal.input_text);
+            if (hover && IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
+                ui_settings_active = 1;
+        }
+
         // input bar
         Rectangle ib = {PAD, sh - INPUT_H, sw - 2 * PAD, INPUT_H - 10};
-        DrawRectangleRounded(ib, 0.3f, 8, (Color){38, 38, 44, 255});
+        DrawRectangleRounded(ib, 0.3f, 8, pal.input_bg);
         float ty = ib.y + (ib.height - ui_font_size()) / 2;
         if (bridge_confirm_pending()) {
             char prompt[192];
@@ -142,21 +247,27 @@ int main(void) {
                      bridge_confirm_name());
             ui_draw_text(prompt, ib.x + 12, ty, (Color){240, 190, 90, 255});
         } else if (input_len > 0) {
-            ui_draw_text(input, ib.x + 12, ty, WHITE);
+            ui_draw_text(input, ib.x + 12, ty, pal.input_text);
             if (fmodf(GetTime(), 1.0f) < 0.5f) {
                 float tw = ui_measure_text(input);
-                DrawRectangle((int)(ib.x + 14 + tw), (int)ty, 2, ui_font_size(), WHITE);
+                DrawRectangle((int)(ib.x + 14 + tw), (int)ty, 2, ui_font_size(), pal.cursor);
             }
         } else {
             const char *hint = !bridge_connected() ? "connecting to agent..."
-                             : busy ? "working..."
-                             : "type a message or /help, press Enter";
-            ui_draw_text(hint, ib.x + 12, ty, (Color){120, 120, 130, 255});
+                              : busy ? "working..."
+                              : "type a message or /help, press Enter";
+            ui_draw_text(hint, ib.x + 12, ty, pal.placeholder);
+        }
+
+        // settings overlay (on top of everything)
+        if (ui_settings_active) {
+            ui_settings_active = ui_draw_settings(sw, sh);
         }
 
         EndDrawing();
     }
 
+    ui_save_settings();
     bridge_shutdown();
     ui_unload_font();
     CloseWindow();

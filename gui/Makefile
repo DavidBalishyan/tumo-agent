@@ -25,7 +25,7 @@ $(BUILD):
 $(BUILD)/chat.o:   $(SRC)/chat.h
 $(BUILD)/paths.o:  $(SRC)/paths.h
 $(BUILD)/bridge.o: $(SRC)/bridge.h $(SRC)/chat.h $(SRC)/paths.h vendor/cjson/cJSON.h
-$(BUILD)/ui.o:     $(SRC)/ui.h $(SRC)/chat.h $(SRC)/paths.h
+$(BUILD)/ui.o:     $(SRC)/ui.h $(SRC)/chat.h $(SRC)/paths.h $(SRC)/bridge.h
 $(BUILD)/main.o:   $(SRC)/chat.h $(SRC)/bridge.h $(SRC)/ui.h $(SRC)/paths.h
 $(BUILD)/cJSON.o:  vendor/cjson/cJSON.h
 
